@@ -14,7 +14,6 @@ def _init_worker(special_tokens: list[str]):
 
 
 def pretokenization(chunk:str):
-
     d = defaultdict(int)
     for sc in _SPLIT_RE.split(chunk):
         for x in _PAT_RE.finditer(sc): # regex-based pre-tokenizer
@@ -56,7 +55,6 @@ def train_bpe(input_path,vocab_size=1000,special_tokens=['<|endoftext|>']):
         boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
         
         d = defaultdict(int)
-        q = multiprocessing.Queue()
         chunks = []
         for start, end in zip(boundaries[:-1], boundaries[1:]):
             f.seek(start)
@@ -66,36 +64,46 @@ def train_bpe(input_path,vocab_size=1000,special_tokens=['<|endoftext|>']):
 
         d = parallel_pretokenization(chunks,special_tokens,nproc=num_processes,chunksize=4)
 
+        adjacent_frequency = defaultdict(int)
+        for x in d.keys():
+            for bigram in zip(x,x[1:]):
+                adjacent_frequency[bigram] += d[x]
+
         for count in range(num_merges):
-            adjacent_frequency = defaultdict(int)
-            for x in d.keys():
-                for bigram in zip(x,x[1:]):
-                    adjacent_frequency[bigram] += d[x]
 
             '''
                 排序不是 lexicographical order, 因为很可能解码不出字符，实际上是 byte order
             '''
-            adjacent_frequency = sorted(adjacent_frequency.items(),key=lambda x:(x[1],vocab[x[0][0]],vocab[x[0][1]]),reverse=True)
+            frequency_list = sorted(adjacent_frequency.items(),key=lambda x:(x[1],vocab[x[0][0]],vocab[x[0][1]]),reverse=True)
 
-            # print(d)
-            # print(adjacent_frequency)
-
-            index1, index2 = adjacent_frequency[0][0]
+            index1, index2 = frequency_list[0][0]
             new_index = 256 + len(special_tokens) + count
             vocab[new_index] = vocab[index1] + vocab[index2]
             merges.append((vocab[index1],vocab[index2]))
+            
+            # merge
             old_keys = copy.deepcopy(list(d.keys()))
             for x in old_keys:
                 new_key = []
                 i = 0
+                flag = False
                 while i < len(x):
                     if i+1 < len(x) and x[i] == index1 and x[i+1] == index2:
+                        adjacent_frequency[(x[i],x[i+1])] -= d[x]
+                        if i-1 >= 0:
+                            adjacent_frequency[(x[i-1],x[i])] -= d[x]
+                            adjacent_frequency[(x[i-1],new_index)] += d[x]
+                        if i+2 < len(x):
+                            adjacent_frequency[(x[i+1],x[i+2])] -= d[x]
+                            adjacent_frequency[(new_index,x[i+2])] += d[x]
+                        flag = True
                         new_key.append(new_index)
                         i += 2
                     else:
                         new_key.append(x[i])
                         i += 1
-                d[tuple(new_key)] = d.pop(x)
+                if flag:
+                    d[tuple(new_key)] = d.pop(x)
 
     return vocab,merges 
 
@@ -106,3 +114,13 @@ def train_bpe(input_path,vocab_size=1000,special_tokens=['<|endoftext|>']):
 
 # train_bpe(input_path,vocab_size,special_tokens)
 
+import time
+input_path = "./tests/fixtures/corpus.en"
+start_time = time.time()
+_, _ = train_bpe(
+    input_path=input_path,
+    vocab_size=500,
+    special_tokens=["<|endoftext|>"],
+)
+end_time = time.time()
+assert end_time - start_time < 1.5
