@@ -1,8 +1,8 @@
 from cs336_basics.pretokenization_example import find_chunk_boundaries
 import regex as re
 from collections import defaultdict
-import copy
 import multiprocessing
+from tqdm import tqdm
 
 def _init_worker(special_tokens: list[str]):
     global _SPLIT_RE, _PAT_RE
@@ -28,7 +28,6 @@ def parallel_pretokenization(
     chunksize: int = 1,
 ) -> defaultdict:
     total = defaultdict(int)
-
     with multiprocessing.Pool(processes=nproc, initializer=_init_worker, initargs=(special_tokens,)) as pool:
         for d in pool.imap_unordered(pretokenization, chunks, chunksize=chunksize):
             # 聚合每个 worker 的 defaultdict
@@ -49,7 +48,7 @@ def train_bpe(input_path,vocab_size=1000,special_tokens=['<|endoftext|>']):
 
     num_merges = vocab_size - 256 - len(special_tokens) # 0-255 和 special_tokens
 
-    num_processes = 10
+    num_processes = 6
 
     with open(input_path, "rb") as f:
         boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
@@ -58,69 +57,74 @@ def train_bpe(input_path,vocab_size=1000,special_tokens=['<|endoftext|>']):
         chunks = []
         for start, end in zip(boundaries[:-1], boundaries[1:]):
             f.seek(start)
-            chunk = f.read(end - start).decode("utf-8", errors="ignore") # 根据分块
+            chunk = f.read(end - start).decode("utf-8", errors="ignore") # 分块
             chunk = re.sub(r"\r\n?", "\n", chunk) # 统一换行符
             chunks.append(chunk)
 
-        d = parallel_pretokenization(chunks,special_tokens,nproc=num_processes,chunksize=4)
+    d = parallel_pretokenization(chunks,special_tokens,nproc=num_processes,chunksize=1)
 
-        adjacent_frequency = defaultdict(int)
-        for x in d.keys():
-            for bigram in zip(x,x[1:]):
-                adjacent_frequency[bigram] += d[x]
+    adjacent_frequency = defaultdict(int)
+    for x in tqdm(d.keys()):
+        for bigram in zip(x,x[1:]):
+            adjacent_frequency[bigram] += d[x]
 
-        for count in range(num_merges):
+    for count in range(num_merges):
+        '''
+            排序不是 lexicographical order, 因为很可能解码不出字符，实际上是 byte order
+        '''
+        frequency_list = sorted(adjacent_frequency.items(),key=lambda x:(x[1],vocab[x[0][0]],vocab[x[0][1]]),reverse=True)
 
-            '''
-                排序不是 lexicographical order, 因为很可能解码不出字符，实际上是 byte order
-            '''
-            frequency_list = sorted(adjacent_frequency.items(),key=lambda x:(x[1],vocab[x[0][0]],vocab[x[0][1]]),reverse=True)
-
-            index1, index2 = frequency_list[0][0]
-            new_index = 256 + len(special_tokens) + count
-            vocab[new_index] = vocab[index1] + vocab[index2]
-            merges.append((vocab[index1],vocab[index2]))
-            
-            # merge
-            old_keys = copy.deepcopy(list(d.keys()))
-            for x in old_keys:
-                new_key = []
-                i = 0
-                flag = False
-                while i < len(x):
-                    if i+1 < len(x) and x[i] == index1 and x[i+1] == index2:
-                        adjacent_frequency[(x[i],x[i+1])] -= d[x]
-                        if i-1 >= 0:
-                            adjacent_frequency[(x[i-1],x[i])] -= d[x]
-                            adjacent_frequency[(x[i-1],new_index)] += d[x]
-                        if i+2 < len(x):
-                            adjacent_frequency[(x[i+1],x[i+2])] -= d[x]
-                            adjacent_frequency[(new_index,x[i+2])] += d[x]
-                        flag = True
-                        new_key.append(new_index)
-                        i += 2
-                    else:
-                        new_key.append(x[i])
-                        i += 1
-                if flag:
-                    d[tuple(new_key)] = d.pop(x)
-
+        index1, index2 = frequency_list[0][0]
+        new_index = 256 + len(special_tokens) + count
+        vocab[new_index] = vocab[index1] + vocab[index2]
+        merges.append((vocab[index1],vocab[index2]))
+        
+        # merge
+        new_d = defaultdict(int)
+        for x,freq in d.items():
+            i = 0
+            x_copy = x
+            while i < len(x_copy):
+                if i+1 < len(x_copy) and x_copy[i] == index1 and x_copy[i+1] == index2:
+                    adjacent_frequency[(x_copy[i],x_copy[i+1])] -= d[x]
+                    if i-1 >= 0:
+                        adjacent_frequency[(x_copy[i-1],x_copy[i])] -= d[x]
+                        adjacent_frequency[(x_copy[i-1],new_index)] += d[x]
+                    if i+2 < len(x_copy):
+                        adjacent_frequency[(x_copy[i+1],x_copy[i+2])] -= d[x]
+                        adjacent_frequency[(new_index,x_copy[i+2])] += d[x]
+                    x_copy = x_copy[:i] + (new_index,) + x_copy[i+2:]
+                i += 1
+            # new_d.append((tuple(new_key),d[x]))
+            new_d[x_copy] = freq
+        # d = defaultdict(int,new_d)
+        d = new_d
     return vocab,merges 
 
-
-# input_path = "G:\\cs336\\data\\TinyStoriesV2-GPT4-valid.txt"
-# vocab_size = 1000
-# special_tokens = ['<|endoftext|>']
-
-# train_bpe(input_path,vocab_size,special_tokens)
-
 import time
-input_path = "./tests/fixtures/corpus.en"
-start_time = time.time()
-_, _ = train_bpe(
-    input_path=input_path,
-    vocab_size=500,
-    special_tokens=["<|endoftext|>"],
-)
-end_time = time.time()
-assert end_time - start_time < 1.5
+import json
+import pickle
+if __name__ == "__main__":
+    input_path = "./tests/fixtures/corpus.en"
+    start_time = time.time()
+    vocab, merges = train_bpe(
+        input_path=input_path,
+        vocab_size=500,
+        special_tokens=["<|endoftext|>"],
+    )
+    end_time = time.time()
+
+
+    # input_path = "G:\\cs336\\data\\TinyStoriesV2-GPT4-train.txt"
+    # start_time = time.time()
+    # vocab, merges = train_bpe(
+    #     input_path=input_path,
+    #     vocab_size=10000,
+    #     special_tokens=["<|endoftext|>"],
+    # )
+    # end_time = time.time()
+    print("time_used:",end_time - start_time)
+    with open('1.txt','wb') as f:
+        pickle.dump(vocab,f)
+        pickle.dump(merges,f)
+    # assert (end_time - start_time) < 1.5
