@@ -1,41 +1,33 @@
 from cs336_basics.pretokenization_example import find_chunk_boundaries
 import regex as re
 from collections import defaultdict
-import multiprocessing
-from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
+import time
+import pickle
 
-def _init_worker(special_tokens: list[str]):
-    global _SPLIT_RE, _PAT_RE
-    split_pat = "|".join(map(re.escape, special_tokens))
-    _SPLIT_RE = re.compile(split_pat)
-
+def build_regex(special_tokens: list[str]):
     PAT_STR = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-    _PAT_RE = re.compile(PAT_STR)
+    split_pat = "|".join(map(re.escape, special_tokens))
+    return re.compile(split_pat), re.compile(PAT_STR)
 
-
-def pretokenization(chunk:str):
+def pretokenize_chunk(chunk: str, split_re, pat_re) -> defaultdict:
     d = defaultdict(int)
-    for sc in _SPLIT_RE.split(chunk):
-        for x in _PAT_RE.finditer(sc): # regex-based pre-tokenizer
-            s = tuple(map(int,x.group().encode('utf-8')))
-            d[s] += 1
+    for sc in split_re.split(chunk):
+        for m in pat_re.finditer(sc):
+            token = tuple(map(int,m.group().encode('utf-8')))
+            # token = tuple(m.group().encode('utf-8'))
+            d[token] += 1
     return d
 
-def parallel_pretokenization(
-    chunks: list[str],
-    special_tokens: list[str],
-    nproc: int | None = None,
-    chunksize: int = 1,
-) -> defaultdict:
+def parallel_pretokenization_threads_per_chunk(chunks, special_tokens, nthreads):
+    split_re, pat_re = build_regex(special_tokens)
+
     total = defaultdict(int)
-    with multiprocessing.Pool(processes=nproc, initializer=_init_worker, initargs=(special_tokens,)) as pool:
-        for d in pool.imap_unordered(pretokenization, chunks, chunksize=chunksize):
-            # 聚合每个 worker 的 defaultdict
+    with ThreadPoolExecutor(max_workers=nthreads) as ex:
+        for d in ex.map(lambda c: pretokenize_chunk(c, split_re, pat_re), chunks):
             for k, v in d.items():
                 total[k] += v
-
-    return total 
-
+    return total
 
 def train_bpe(input_path,vocab_size=1000,special_tokens=['<|endoftext|>']):
 
@@ -48,10 +40,12 @@ def train_bpe(input_path,vocab_size=1000,special_tokens=['<|endoftext|>']):
 
     num_merges = vocab_size - 256 - len(special_tokens) # 0-255 和 special_tokens
 
-    num_processes = 6
+    num_threads = 10
 
+    print('start chunking')
+    t1 = time.time()
     with open(input_path, "rb") as f:
-        boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+        boundaries = find_chunk_boundaries(f, num_threads, b"<|endoftext|>")
         
         d = defaultdict(int)
         chunks = []
@@ -60,50 +54,62 @@ def train_bpe(input_path,vocab_size=1000,special_tokens=['<|endoftext|>']):
             chunk = f.read(end - start).decode("utf-8", errors="ignore") # 分块
             chunk = re.sub(r"\r\n?", "\n", chunk) # 统一换行符
             chunks.append(chunk)
+    t2 = time.time()
+    print('end chunking')
+    print('chukning_time_used:',t2-t1)
 
-    d = parallel_pretokenization(chunks,special_tokens,nproc=num_processes,chunksize=1)
+    print('start pretokenization')
+    t1 = time.time()
+    d = parallel_pretokenization_threads_per_chunk(chunks,special_tokens,num_threads)
+    t2 = time.time()
+    print('end pretokenization')
+    print('pretokenization_time_used:',t2-t1)
 
-    adjacent_frequency = defaultdict(int)
-    for x in tqdm(d.keys()):
+    pair_frequency = defaultdict(int)
+
+    for x in d.keys():
         for bigram in zip(x,x[1:]):
-            adjacent_frequency[bigram] += d[x]
+            pair_frequency[bigram] += d[x]
 
+    print('start merging')
+    t1 = time.time()
     for count in range(num_merges):
         '''
-            排序不是 lexicographical order, 因为很可能解码不出字符，实际上是 byte order
+            不是 lexicographical order, 因为很可能解码不出字符，实际上是 byte order
         '''
-        frequency_list = sorted(adjacent_frequency.items(),key=lambda x:(x[1],vocab[x[0][0]],vocab[x[0][1]]),reverse=True)
-
-        index1, index2 = frequency_list[0][0]
+        pair = max(pair_frequency.items(), key=lambda x:(x[1],vocab[x[0][0]],vocab[x[0][1]]))[0]
+        index1, index2 = pair
         new_index = 256 + len(special_tokens) + count
         vocab[new_index] = vocab[index1] + vocab[index2]
         merges.append((vocab[index1],vocab[index2]))
         
         # merge
-        new_d = defaultdict(int)
+        words_to_update = defaultdict(int)
         for x,freq in d.items():
             i = 0
-            x_copy = x
-            while i < len(x_copy):
-                if i+1 < len(x_copy) and x_copy[i] == index1 and x_copy[i+1] == index2:
-                    adjacent_frequency[(x_copy[i],x_copy[i+1])] -= d[x]
-                    if i-1 >= 0:
-                        adjacent_frequency[(x_copy[i-1],x_copy[i])] -= d[x]
-                        adjacent_frequency[(x_copy[i-1],new_index)] += d[x]
-                    if i+2 < len(x_copy):
-                        adjacent_frequency[(x_copy[i+1],x_copy[i+2])] -= d[x]
-                        adjacent_frequency[(new_index,x_copy[i+2])] += d[x]
-                    x_copy = x_copy[:i] + (new_index,) + x_copy[i+2:]
-                i += 1
-            # new_d.append((tuple(new_key),d[x]))
-            new_d[x_copy] = freq
-        # d = defaultdict(int,new_d)
-        d = new_d
+            if index1 in x and index2 in x:
+                x_copy = x
+                while i < len(x_copy):
+                    if i+1 < len(x_copy) and x_copy[i] == index1 and x_copy[i+1] == index2:
+                        pair_frequency[(x_copy[i],x_copy[i+1])] -= d[x]
+                        if i-1 >= 0:
+                            pair_frequency[(x_copy[i-1],x_copy[i])] -= d[x]
+                            pair_frequency[(x_copy[i-1],new_index)] += d[x]
+                        if i+2 < len(x_copy):
+                            pair_frequency[(x_copy[i+1],x_copy[i+2])] -= d[x]
+                            pair_frequency[(new_index,x_copy[i+2])] += d[x]
+                        x_copy = x_copy[:i] + (new_index,) + x_copy[i+2:]
+                    i += 1
+                words_to_update[(x,x_copy)] = freq
+        for k,v in words_to_update.items():
+            del d[k[0]]
+            d[k[1]] = v
+
+    t2 = time.time()
+    print('end merging')
+    print('merging_time_used:',t2-t1)
     return vocab,merges 
 
-import time
-import json
-import pickle
 if __name__ == "__main__":
     input_path = "./tests/fixtures/corpus.en"
     start_time = time.time()
@@ -115,7 +121,7 @@ if __name__ == "__main__":
     end_time = time.time()
 
 
-    # input_path = "G:\\cs336\\data\\TinyStoriesV2-GPT4-train.txt"
+    # input_path = "D:\\cs336\\data\\TinyStoriesV2-GPT4-train.txt"
     # start_time = time.time()
     # vocab, merges = train_bpe(
     #     input_path=input_path,
@@ -123,8 +129,12 @@ if __name__ == "__main__":
     #     special_tokens=["<|endoftext|>"],
     # )
     # end_time = time.time()
-    print("time_used:",end_time - start_time)
-    with open('1.txt','wb') as f:
+    print("total_time_used:",end_time - start_time)
+    with open('vocab.dump','wb') as f:
         pickle.dump(vocab,f)
+    with open('merges.dump','wb') as f:
         pickle.dump(merges,f)
-    # assert (end_time - start_time) < 1.5
+
+    # with open('voacb.txt','rb') as f:
+    #     vocab = pickle.load(f)
+    #     print(vocab)
