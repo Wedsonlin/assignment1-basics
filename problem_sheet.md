@@ -47,3 +47,11 @@ An example: `'你是谁？'`
 
 
 
+## Problem (train_bpe_tinystories)
+
+#### (a) Train a byte-level BPE tokenizer on the TinyStories dataset, using a maximum vocabulary size of 10,000. Make sure to add the TinyStories <|endoftext|> special token to the vocabulary. Serialize the resulting vocabulary and merges to disk for further inspection. How many hours and memory did training take? What is the longest token in the vocabulary? Does it make sense?
+
+The logest token in the vocabulary is `' accomplishment'`,  and it is a proper English word, definitely makes sense.  
+
+#### (b) Profile your code. What part of the tokenizer training process takes the most time?
+
