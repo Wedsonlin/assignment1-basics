@@ -1,5 +1,5 @@
 from cs336_basics.pretokenization import chunking,parallel_pretokenization_processes
-from collections import defaultdict, Iterable, Iterator
+from collections import defaultdict, Iterable, Iterable
 import time
 import pickle
 import regex as re
