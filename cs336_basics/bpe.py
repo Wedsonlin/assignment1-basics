@@ -6,6 +6,8 @@ import pickle
 import regex as re
 from concurrent.futures import ProcessPoolExecutor
 
+PAT_STR = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+
 def train_bpe(input_path,vocab_size=1000,special_tokens=['<|endoftext|>']):
 
     vocab : dict[int, bytes] = {x:bytes([x]) for x in range(256)}
@@ -80,44 +82,38 @@ def train_bpe(input_path,vocab_size=1000,special_tokens=['<|endoftext|>']):
     print('merging_time_used:',t2-t1)
     return vocab,merges 
 
-PAT_STR = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 def _pretokenize_worker(args):
-    pat_re = re.compile(PAT_STR)
+    m, merges = args
+    token = [bytes([x]) for x in m]
+    # print("token:",token)
+    for merge in merges:
+        i = 0
+        while i < len(token)-1:
+            # print(token[i],token[i+1],merge)
+            if token[i] == merge[0] and token[i+1] == merge[1]:
+                # print(merge)
+                token[i] = merge[0] + merge[1]
+                del token[i+1]
+            i += 1
+        if len(token) == 1:
+            break
+    return token
 
-    pre_token, merges, special_tokens = args
-    if pre_token == "":
-        return []
-    elif special_tokens != None and pre_token in special_tokens:
-        for special_token in special_tokens:
-            if pre_token == special_token:
-                return [pre_token.encode('utf-8')]
-    else:
-        tokens = []
-        for m in pat_re.finditer(pre_token):
-            token = [bytes([x]) for x in m.group().encode('utf-8')]
-            # print("token:",token)
-            for merge in merges:
-                i = 0
-                while i < len(token)-1:
-                    # print(token[i],token[i+1],merge)
-                    if token[i] == merge[0] and token[i+1] == merge[1]:
-                        # print(merge)
-                        token[i] = merge[0] + merge[1]
-                        del token[i+1]
-                    i += 1
-                if len(token) == 1:
-                    break
-            tokens += token
-        return tokens
+def parallel_tokenization_processes(text_segments, merges, ex):
+    """
+    Process a list of text segments in parallel.
 
-def parallel_tokenization_processes(pre_tokens, merges, special_tokens, nworkers):
-    args = [(pre_token, merges, special_tokens) for pre_token in pre_tokens]
+    Args:
+        text_segments: List of UTF-8 encoded byte strings to tokenize
+        merges: BPE merge operations
+        ex: ProcessPoolExecutor instance
 
-    total_list = []
-    with ProcessPoolExecutor(max_workers=nworkers) as ex:
-        for l in ex.map(_pretokenize_worker, args):
-            total_list += l
-    return total_list
+    Returns:
+        List of lists of tokens (one list per segment)
+    """
+    args = [(segment, merges) for segment in text_segments]
+    results = list(ex.map(_pretokenize_worker, args))
+    return results
 
 class Tokenizer():
     def __init__(self, vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]], special_tokens: list[str] | None = None):
@@ -139,47 +135,50 @@ class Tokenizer():
         return cls(vocab, merges, special_tokens)
 
     def encode(self, text: str)  -> list[int] :
+        # Setup regex patterns
         if self.special_tokens != None:
-            split_pat = "(" + "|".join(map(re.escape, self.special_tokens)) + ")" # 添加"()"表示即拿pattern进行分割，又捕获pattern
+            split_pat = "(" + "|".join(map(re.escape, self.special_tokens)) + ")"
             split_re = re.compile(split_pat)
         else:
             split_re = re.compile(r'(?!)')
 
         pat_re = re.compile(PAT_STR)
 
-
-        encoded = []
+        # Phase 1: Collect all segments to process
         pretokens = split_re.split(text)
-        encoded = parallel_tokenization_processes(pretokens,self.merges,self.special_tokens,16)
-        # for pre_token in split_re.split(text):
-            # print("pre_token:",pre_token)
+        segments_to_process = []  # List of (type, data) tuples
 
+        for pre_token in pretokens:
+            if pre_token == "":
+                continue
+            elif self.special_tokens != None and pre_token in self.special_tokens:
+                segments_to_process.append(('special', pre_token.encode('utf-8')))
+            else:
+                for m in pat_re.finditer(pre_token):
+                    segments_to_process.append(('regular', m.group().encode('utf-8')))
 
-            # if pre_token == "":
-            #     continue
-            # elif self.special_tokens != None and pre_token in self.special_tokens:
-            #     for special_token in self.special_tokens:
-            #         if pre_token == special_token:
-            #             encoded.append(pre_token.encode('utf-8'))
-            #             break
-            # else:
-            #     for m in pat_re.finditer(pre_token):
-            #         token = [bytes([x]) for x in m.group().encode('utf-8')]
-            #         # print("token:",token)
-            #         for merge in self.merges:
-            #             i = 0
-            #             while i < len(token)-1:
-            #                 # print(token[i],token[i+1],merge)
-            #                 if token[i] == merge[0] and token[i+1] == merge[1]:
-            #                     # print(merge)
-            #                     token[i] = merge[0] + merge[1]
-            #                     del token[i+1]
-            #                 i += 1
-            #             if len(token) == 1:
-            #                 break
-            #         # print(token)
-            #         encoded += token
+        # Phase 2: Parallel process all regular segments
+        regular_segments = [data for typ, data in segments_to_process if typ == 'regular']
 
+        print(len(regular_segments))
+        if regular_segments:
+            nworkers = 10
+            with ProcessPoolExecutor(max_workers=nworkers) as ex:
+                tokenized_results = parallel_tokenization_processes(regular_segments, self.merges, ex)
+        else:
+            tokenized_results = []
+
+        # Phase 3: Reconstruct in order
+        encoded = []
+        regular_idx = 0
+        for typ, data in segments_to_process:
+            if typ == 'special':
+                encoded.append(data)
+            else:  # regular
+                encoded.extend(tokenized_results[regular_idx])
+                regular_idx += 1
+
+        # Convert bytes to token IDs
         return [self.reverse_vocab[x] for x in encoded]
     
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
@@ -225,41 +224,51 @@ if __name__ == "__main__":
     # with open('merges_owt.dump','wb') as f:
     #     pickle.dump(merges,f)
 
-    with open('./tokenizer_parameters/vocab_owt.dump','rb') as f:
-        vocab = pickle.load(f)
+    # with open('./tokenizer_parameters/vocab_owt.dump','rb') as f:
+    #     vocab = pickle.load(f)
 
-        tokens = vocab.values()
-        max_length_token = max(tokens,key=lambda x:len(x))
-        print(max_length_token)
-        count = 0
-        for token in tokens:
-            try:
-                token.decode('utf-8')
-            except UnicodeDecodeError:
-                count += 1
+    #     tokens = vocab.values()
+    #     max_length_token = max(tokens,key=lambda x:len(x))
+    #     print(max_length_token)
+    #     count = 0
+    #     for token in tokens:
+    #         try:
+    #             token.decode('utf-8')
+    #         except UnicodeDecodeError:
+    #             count += 1
         
-        print(count)
+    #     print(count)
     
-    # from tests.test_tokenizer import get_tokenizer_from_vocab_merges_path
-    # import tiktoken
+    from tests.test_tokenizer import get_tokenizer_from_vocab_merges_path
+    import tiktoken
 
-    # VOCAB_PATH = 'tests/fixtures/gpt2_vocab.json'
-    # MERGES_PATH = 'tests/fixtures/gpt2_merges.txt'
-    # FIXTURES_PATH = 'tests/fixtures/'
+    VOCAB_PATH = 'tests/fixtures/gpt2_vocab.json'
+    MERGES_PATH = 'tests/fixtures/gpt2_merges.txt'
+    FIXTURES_PATH = 'tests/fixtures/'
 
-    # reference_tokenizer = tiktoken.get_encoding("gpt2")
-    # tokenizer = get_tokenizer_from_vocab_merges_path(
-    #     vocab_path=VOCAB_PATH,
-    #     merges_path=MERGES_PATH,
-    # )
+    reference_tokenizer = tiktoken.get_encoding("gpt2")
+    tokenizer = get_tokenizer_from_vocab_merges_path(
+        vocab_path=VOCAB_PATH,
+        merges_path=MERGES_PATH,
+        special_tokens = ['<|endoftext|>']
+    )
+    if b'<|endoftext|>' in tokenizer.vocab.values():
+        print("111111")
+    with open(FIXTURES_PATH + "tinystories_sample_5M.txt") as f:
+        ids = []
+        text = f.read()
 
-    # with open(FIXTURES_PATH + "tinystories_sample_5M.txt") as f:
-    #     ids = []
-    #     t1 = time.time()
-    #     text = f.read()
-    #     tokenizer.encode(text)
-    #     t2 = time.time()
-    #     print('tokenization_time_used:',t2-t1)
+        t1 = time.time()
+        a = reference_tokenizer.encode(text,allowed_special={'<|endoftext|>'})
+        t2 = time.time()
+        print('tiktokenizer_time_used:',t2-t1)
+
+
+        t1 = time.time()
+        b = tokenizer.encode(text)
+        t2 = time.time()
+        print('tokenization_time_used:',t2-t1)
+        assert a == b
         # for _id in _encode_iterable(tokenizer, f):
         #     # print(_id)
         #     ids.append(_id)
