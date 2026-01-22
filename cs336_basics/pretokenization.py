@@ -68,15 +68,6 @@ def chunking(input_path, num_of_chunk):
 # 全局正则表达式模式字符串（用于多进程中重新编译）
 PAT_STR = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
-def pretokenize_chunk(chunk,special_tokens):
-    split_pat = "|".join(map(re.escape, special_tokens))
-    split_re = re.compile(split_pat)
-    pat_re = re.compile(PAT_STR)
-
-    pretoken_list = []
-    for sc in split_re.split(chunk):
-        for m in pat_re.finditer(sc):
-            token = tuple(map(int, m.group().encode('utf-8')))
 
 def _pretokenize_chunk_worker(args):
     """Worker 函数，在每个进程中重新编译正则表达式"""

@@ -1,8 +1,12 @@
 from cs336_basics.pretokenization import chunking,parallel_pretokenization_processes
-from collections import defaultdict, Iterable, Iterable
+from collections import defaultdict
+from collections.abc import Iterator, Iterable
 import time
 import pickle
 import regex as re
+from concurrent.futures import ProcessPoolExecutor
+
+PAT_STR = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
 def train_bpe(input_path,vocab_size=1000,special_tokens=['<|endoftext|>']):
 
@@ -29,6 +33,7 @@ def train_bpe(input_path,vocab_size=1000,special_tokens=['<|endoftext|>']):
     t1 = time.time()
     counter = parallel_pretokenization_processes(chunks, special_tokens, num_of_process)
     t2 = time.time()
+    
     print('end pretokenization')
     print('pretokenization_time_used:',t2-t1)
 
@@ -77,13 +82,46 @@ def train_bpe(input_path,vocab_size=1000,special_tokens=['<|endoftext|>']):
     print('merging_time_used:',t2-t1)
     return vocab,merges 
 
+def split_by_special(text,special_tokens,drop_special=False):
+    if special_tokens == None:
+        return [text]
+    split_pat = "|".join(map(re.escape, special_tokens))
+    if not drop_special:
+        split_pat = f"({split_pat})"
+    split_re = re.compile(split_pat)
+    return [c for c in split_re.split(text) if c]
+
+def merge_and_encode(chunk,merges,reverse_vocab):
+    pat_re = re.compile(PAT_STR)
+    tokens = []
+    for pretoken in pat_re.findall(chunk): 
+        token = [bytes([x]) for x in pretoken.encode('utf-8')]
+        while True:
+            i = 0
+            merge_pos = -1
+            min_id = len(reverse_vocab)
+            while i < len(token)-1:
+                pair = (token[i],token[i+1])
+                if pair in merges:
+                    token_id = reverse_vocab.get(token[i]+token[i+1])
+                    if token_id is not None and token_id < min_id: # merge后的token_id越小，说明该merge越靠前
+                        min_id = token_id
+                        merge_pos = i
+                i += 1
+            if merge_pos == -1:
+                break
+            token = token[:merge_pos] + [token[merge_pos]+token[merge_pos+1]] + token[merge_pos+2:]
+        tokens.extend(token)
+    return [reverse_vocab[x] for x in tokens]
+
 class Tokenizer():
     def __init__(self, vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]], special_tokens: list[str] | None = None):
         self.vocab = vocab
-        self.merges = merges
-        self.special_tokens = special_tokens
+        self.merges = set(merges) # 底层是哈希表，查找的时间复杂度为O(1)
         self.reverse_vocab = {v:k for k,v in vocab.items()}
-        self.reverse_merges = map(lambda x:(self.reverse_vocab[x[0]],self.reverse_vocab[x[1]]),self.merges)
+        self.special_tokens = special_tokens
+        if special_tokens != None:
+            self.special_tokens = sorted(special_tokens, key=len, reverse=True)
     
     @classmethod
     def from_files(cls,vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | None = None):
@@ -93,62 +131,29 @@ class Tokenizer():
             merges = pickle.load(f)
         
         return cls(vocab, merges, special_tokens)
-    
+
     def encode(self, text: str)  -> list[int] :
-        PAT_STR = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-        pat_re = re.compile(PAT_STR)
-
-        split_pat = "|".join(map(re.escape, self.special_tokens))
-        split_re = re.compile(split_pat)
-        indices = [match.start() for match in split_re.finditer(text)]
-
-        sc_token_seq = []
-        for index in indices:
-            for sc_token in self.special_tokens:
-                if text[index:index+len(sc_token)] == sc_token:
-                    sc_token_seq.append(self.reverse_vocab[sc_token.encode('utf-8')])
-
-        encoded = []
-        for chunk in split_re.split(text):
-            tokens = []
-            for m in pat_re.finditer(chunk):
-                token = [chr(b).encode('utf-8') for b in m.group().encode('utf-8')]
-                for merge in self.merges:
-                    i = 0
-                    while i < len(token)-1:
-                        if token[i] == merge[0] and token[i+1] == merge[1]:
-                            token[i] = merge[0] + merge[1]
-                            del token[i+1]
-                        i += 1
-                    if len(token) == 1:
-                        break
-                
-                tokens += token
-            encoded.append(tokens)
-
-        encoded_text = []
-        i = 0
-        for x in encoded:
-            for b in x:
-                encoded_text.append(self.reverse_vocab[b])
-            encoded_text.append(sc_token_seq[i])
-            i += 1
+        if text == "":
+            return []
+        chunks = split_by_special(text,self.special_tokens,drop_special=False)
+        tokens = []
+        for chunk in chunks:
+            if self.special_tokens and chunk in self.special_tokens:
+                tokens.append(self.reverse_vocab[chunk.encode('utf-8')])
+            else:
+                tokens.extend(merge_and_encode(chunk,self.merges,self.reverse_vocab))
         
-        if i < len(sc_token_seq):
-            encoded_text.append(sc_token_seq[i])
-
-        return encoded_text
+        return tokens
     
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
-        
-        return
+        for s in iterable:
+            yield from self.encode(s)
     
     def decode(self, ids: list[int]) -> str:
-        s = ""
+        s = b""
         for id in ids:
-            s += self.vocab[id]
-        return s 
-
+            s += self.vocab[id]        
+        return s.decode('utf-8',errors='replace')
 
 if __name__ == "__main__":
     # input_path = "./tests/fixtures/corpus.en"
@@ -174,10 +179,41 @@ if __name__ == "__main__":
     #     pickle.dump(vocab,f)
     # with open('merges_owt.dump','wb') as f:
     #     pickle.dump(merges,f)
+    
 
-    with open('./tokenizer_parameters/vocab_tinystories.dump','rb') as f:
-        vocab = pickle.load(f)
+    VOCAB_PATH = 'G:/cs336/parameters/vocab_tinystories.dump'
+    MERGES_PATH = 'G:/cs336/parameters/merges_tinystories.dump'
+    special_tokens=['<|endoftext|>']
+    tokenizer = Tokenizer.from_files(VOCAB_PATH,MERGES_PATH,special_tokens)
 
-        tokens = vocab.values()
-        max_length_token = max(tokens,key=lambda x:len(x))
-        print(max_length_token)
+    import numpy as np
+    tokens = []
+    with open("G:/cs336/data/" + "owt_train.txt",'r',encoding='utf-8') as f:
+        t1 = time.time()
+        for token in tokenizer.encode_iterable(f):
+            tokens.append(token)
+        t2 = time.time()
+        sec = t2-t1
+        print("time_used:",sec)
+
+        # total_bytes = len(text.encode('utf-8'))
+        # t1 = time.time()
+        # tokens = tokenizer.encode(text)
+        # t2 = time.time()
+        # sec = t2-t1
+        # print(sec)
+        # throughput = total_bytes / sec
+        # print("throughput:",throughput)
+
+        tokens = np.array(tokens,dtype=np.uint16)
+        np.save("G:/cs336/parameters/tokenID_owt_train.npy",tokens)
+    
+    result = np.load("G:/cs336/parameters/tokenID_owt_train.npy")
+    print(result)
+    print(len(result))
+    print(type(result))
+    print(result.dtype)
+    # with open("G:/cs336/parameters/tokenID_tinystories_train.dump","rb") as f:
+    #     tokens = pickle.load(f)
+    #     tokens = np.array(tokens,dtype=np.uint16)
+    #     np.save("G:/cs336/parameters/tokenID_tinystories_train.npy",tokens)
