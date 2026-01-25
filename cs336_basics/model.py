@@ -60,3 +60,34 @@ class SwiGLU(nn.Module):
         W3x = einsum(self.W3, x, "d_ff d_model, ... d_model -> ... d_ff")
         SiLU_W1x = W1x*torch.sigmoid(W1x)
         return einsum(self.W2, SiLU_W1x*W3x, "d_model d_ff, ... d_ff -> ... d_model")
+    
+
+class RotaryPositionalEmbedding(nn.Module):
+    def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
+        super().__init__()
+        b = torch.ones(d_k,device=device) * theta
+        e = torch.Tensor(d_k,device=device)
+        k = 1
+        for i in range(d_k,2):
+            e[i] = -(2*k-2)/d_k
+            e[i+1] = -(2*k-2)/d_k
+            k += 1
+
+        self.d_k = d_k
+        self.s = torch.empty(max_seq_len,d_k,device=device)
+        for i in range(max_seq_len):
+            self.s[i] = torch.sin(torch.pow(b,(i+1)*e))
+        
+        self.c = torch.Tensor(max_seq_len,d_k,device=device)
+        for i in range(max_seq_len):
+            self.c[i] = torch.sin(torch.pow(b,(i+1)*e))
+
+        self.register_buffer(name="RoPE buffer", tensor=None, persistent=False)
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
+        x2 = torch.Tensor(x)
+
+        sign = torch.tensor([-1, 1], device=x2.device, dtype=x2.dtype)
+        x2.reshape(*x2.shape[:-1], self.d_k // 2, 2).flip(-1) * sign
+        x2 = x2.reshape(*x2.shape[:-1], self.d_k)
+
+        return x * self.s[token_positions] + x2 * self.c[token_positions]
