@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from math import sqrt
-from einops import einsum
+from einops import einsum, rearrange
 
 class Linear(nn.Module):
     def __init__(self, in_features, out_features, device=None, dtype=None):
@@ -104,6 +104,23 @@ def softmax(x: torch.Tensor, i: int) -> torch.Tensor:
     exp_y = torch.exp(x-max_element)
     return exp_y / exp_y.sum(dim=i,keepdim=True)
 
-def scaled_dot_product_attention(K: torch.Tensor, Q: torch.Tensor, V: torch.Tensor, mask: torch.Tensor=None):
+def scaled_dot_product_attention(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor=None):
+    '''
+    Args:
+        Q (Float[Tensor, " ... queries d_k"]): Query tensor
+        K (Float[Tensor, " ... keys d_k"]): Key tensor
+        V (Float[Tensor, " ... values d_v"]): Values tensor
+        mask (Bool[Tensor, " ... queries keys"] | None): Mask tensor
+    Return:
+        softmax(QK^T / sqrt(d_k)) @ V
+        根据 Q 与 K 的关联性(内积大小)得到 values 关于 q_i 的权重,
+        那么 q_i 对应的输出 o_i 为 values 的加权和, 即 sum_{i=j}^{values} w_{ij}*v_j
+    '''
+    d_k = Q.shape[-1]
 
-    raise NotImplementedError
+    K_T = rearrange(K, "... keys d_k -> ... d_k keys")
+    QK_T = einsum(Q,K_T,"... queries d_k, ... d_k keys -> ... queries keys") / sqrt(d_k)
+    if mask is not None:
+        QK_T = QK_T.masked_fill(~mask,-torch.inf) # 当mask[i,j] == True时,i-th query和j-th key有关联 
+    weight = softmax(QK_T,-1)
+    return einsum(weight,V,"... queries keys, ... keys d_v -> ... queries d_v")
