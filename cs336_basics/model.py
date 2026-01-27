@@ -170,3 +170,63 @@ class MultiheadSelfAttention(nn.Module):
         head = rearrange(heads, "... h S d_v -> ... S (h d_v)", h=self.num_heads, d_v=self.d_v)
 
         return einsum(self.W_O, head, "d_model hd_v, ... S hd_v -> ... S d_model")
+    
+
+def transformer_block(x: torch.Tensor, d_model: int, num_heads: int, d_ff: int, max_seq_len: int=None, theta: float=None , weights: dict[str, torch.Tensor]=None):
+    rmsnorm1 = RMSNorm(d_model)
+    multihead_self_attention = MultiheadSelfAttention(d_model,num_heads)
+    rmsnorm2 = RMSNorm(d_model)
+    positionwise_feedforward = SwiGLU(d_model, d_ff)
+    
+    if weights:
+        multihead_self_attention.load_state_dict({
+            "W_Q":weights['attn.q_proj.weight'],
+            "W_K":weights['attn.k_proj.weight'],
+            "W_V":weights['attn.v_proj.weight'],
+            "W_O":weights['attn.output_proj.weight']
+        })
+        rmsnorm1.load_state_dict({
+            'g':weights['ln1.weight']
+        })
+        positionwise_feedforward.load_state_dict({
+            "W1":weights['ffn.w1.weight'],
+            "W2":weights['ffn.w2.weight'],
+            "W3":weights['ffn.w3.weight'],
+        })
+        rmsnorm2.load_state_dict({
+            'g':weights['ln2.weight']
+        })
+
+    token_position = torch.arange(0,x.shape[-2],1,device=x.device)
+    y = x + multihead_self_attention(rmsnorm1(x), max_seq_len, theta, token_position)
+    y = y + positionwise_feedforward(rmsnorm2(y))
+
+    return y
+
+class TransformerLM(nn.modules):
+    def __init__(self, vocab_size: int,
+    context_length: int,
+    d_model: int,
+    num_layers: int,
+    num_heads: int,
+    d_ff: int,
+    rope_theta: float,
+    weights: dict[str, torch.Tensor]=None):
+        self.context_length = context_length
+        self.d_model = d_model
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        self.rope_theta = rope_theta
+        self.weights = weights
+
+        self.token_embedding = Embedding(num_embeddings=vocab_size, embedding_dim=d_model)
+        self.rmsnorm = RMSNorm(d_model=d_model)
+        self.linear = Linear(in_features=d_model, out_features=d_model)
+
+    def forward(self, x:torch.Tensor):
+        x = self.token_embedding(x)
+        for _ in range(self.num_layers):
+            x = transformer_block(x,self.d_model, )
+    
+        
