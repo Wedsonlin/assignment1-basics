@@ -66,7 +66,7 @@ class RotaryPositionalEmbedding(nn.Module):
     def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
         super().__init__()
 
-        k = torch.arange(0,d_k//2,1,dtype=torch.float32) # (0,1,...,d_k//2)
+        k = torch.arange(0,d_k//2,1,dtype=torch.float32, device=device) # (0,1,...,d_k//2)
         freq = torch.pow(theta,-2 * k / d_k)
         position = torch.arange(0,max_seq_len,1,dtype=torch.float32) # position从0开始....
         angle = torch.outer(position,freq) # a,b是列向量,outer(a,b)=<a,b^T>
@@ -124,3 +124,49 @@ def scaled_dot_product_attention(Q: torch.Tensor, K: torch.Tensor, V: torch.Tens
         QK_T = QK_T.masked_fill(~mask,-torch.inf) # 当mask[i,j] == True时,i-th query和j-th key有关联 
     weight = softmax(QK_T,-1)
     return einsum(weight,V,"... queries keys, ... keys d_v -> ... queries d_v")
+
+class MultiheadSelfAttention(nn.Module):
+    '''
+        reduced casual multi-head self attention
+    '''
+    def __init__(self, d_model: int, num_heads: int, device=None, dtype=None):
+        super().__init__()
+        self.d_k = d_model // num_heads
+        self.d_v = self.d_k
+        self.num_heads = num_heads
+
+        self.W_Q = nn.Parameter(torch.empty(num_heads*self.d_k, d_model, device=device, dtype=dtype))
+        self.W_K = nn.Parameter(torch.empty(num_heads*self.d_k, d_model, device=device, dtype=dtype))
+        self.W_V = nn.Parameter(torch.empty(num_heads*self.d_v, d_model, device=device, dtype=dtype))
+        self.W_O = nn.Parameter(torch.empty(d_model, num_heads*self.d_v, device=device, dtype=dtype))
+
+        sigma = sqrt(2/(num_heads*self.d_k+d_model))
+        nn.init.trunc_normal_(self.W_Q, 0, sigma, -3*sigma, 3*sigma)
+        nn.init.trunc_normal_(self.W_K, 0, sigma, -3*sigma, 3*sigma)
+
+        sigma = sqrt(2/(num_heads*self.d_v+d_model))
+        nn.init.trunc_normal_(self.W_V, 0, sigma, -3*sigma, 3*sigma)
+        nn.init.trunc_normal_(self.W_O, 0, sigma, -3*sigma, 3*sigma)
+    
+    def forward(self, x: torch.Tensor, max_seq_len: int=None, theta: float=None, token_positions: torch.Tensor=None) -> torch.Tensor:
+        Q = einsum(self.W_Q, x, "hd_k d_model, ... S d_model -> ... S hd_k")
+        K = einsum(self.W_K, x, "hd_k d_model, ... S d_model -> ... S hd_k")
+        V = einsum(self.W_V, x, "hd_v d_model, ... S d_model -> ... S hd_v")
+
+        # 把 head 作为 batch dimension 的一部分
+        Q = rearrange(Q, "... S (h d_k) -> ... h S d_k", h=self.num_heads, d_k=self.d_k)
+        K = rearrange(K, "... S (h d_k) -> ... h S d_k", h=self.num_heads, d_k=self.d_k)
+        V = rearrange(V, "... S (h d_v) -> ... h S d_v", h=self.num_heads, d_v=self.d_v)
+
+        if token_positions != None:
+            RoPE = RotaryPositionalEmbedding(theta, self.d_k, max_seq_len)
+            Q = RoPE(Q, token_positions)
+            K = RoPE(K, token_positions)
+
+        # mask:(queries keys) = (S S) 自动广播 (... S S)
+        mask = torch.tril(torch.ones(x.shape[-2],x.shape[-2],dtype=torch.bool,device=x.device))
+
+        heads = scaled_dot_product_attention(Q,K,V,mask)
+        head = rearrange(heads, "... h S d_v -> ... S (h d_v)", h=self.num_heads, d_v=self.d_v)
+
+        return einsum(self.W_O, head, "d_model hd_v, ... S hd_v -> ... S d_model")
