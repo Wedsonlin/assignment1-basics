@@ -10,8 +10,8 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from cs336_basics.bpe import train_bpe,Tokenizer
-from cs336_basics.model import Linear, Embedding, RMSNorm, SwiGLU, RotaryPositionalEmbedding, MultiheadSelfAttention
-from cs336_basics.model import softmax, scaled_dot_product_attention, transformer_block
+from cs336_basics.model import Linear, Embedding, RMSNorm, SwiGLU, RotaryPositionalEmbedding, MultiheadSelfAttention, TransformerBlock, TransformerLM
+from cs336_basics.model import softmax, scaled_dot_product_attention, SiLU
 
 
 def run_linear(
@@ -197,14 +197,17 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    multihead_self_attention = MultiheadSelfAttention(d_model=d_model, num_heads=num_heads)
+    multihead_self_attention = MultiheadSelfAttention(d_model=d_model,
+                                                      num_heads=num_heads,
+                                                      max_seq_len=max_seq_len, 
+                                                      theta=theta)
     multihead_self_attention.load_state_dict({
         "W_Q" : q_proj_weight,
         "W_K" : k_proj_weight,
         "W_V" : v_proj_weight,
         "W_O" : o_proj_weight
     })
-    return multihead_self_attention(in_features, max_seq_len=max_seq_len, theta=theta, token_positions=token_positions)
+    return multihead_self_attention(in_features, token_positions=token_positions)
 
 
 def run_rope(
@@ -300,7 +303,13 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    return transformer_block(in_features, d_model=d_model, num_heads=num_heads, d_ff=d_ff, max_seq_len=max_seq_len, theta=theta, weights=weights)
+    transformer_block = TransformerBlock(d_model=d_model, 
+                                         num_heads=num_heads, 
+                                         d_ff=d_ff, 
+                                         max_seq_len=max_seq_len, 
+                                         theta=theta, 
+                                         weights=weights)
+    return transformer_block(in_features)
 
 
 def run_transformer_lm(
@@ -382,7 +391,15 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    transformer_lm = TransformerLM(vocab_size=vocab_size,
+                                   context_length=context_length,
+                                   d_model=d_model,
+                                   num_layers=num_layers,
+                                   num_heads=num_heads,
+                                   d_ff=d_ff,
+                                   rope_theta=rope_theta,
+                                   weights=weights)
+    return transformer_lm(in_indices)
 
 
 def run_rmsnorm(
@@ -421,7 +438,7 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    raise NotImplementedError
+    return SiLU(in_features)
 
 
 def run_get_batch(

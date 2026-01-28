@@ -9,9 +9,12 @@ This is Stanford CS336 Spring 2025 Assignment 1: Basics. The assignment involves
 ## Commands
 
 ```bash
-uv run pytest                    # Run all tests
-uv run pytest tests/test_X.py    # Run specific test file
-uv run <file.py>                 # Run any Python file
+uv run pytest                          # Run all tests
+uv run pytest tests/test_model.py      # Run specific test file
+uv run pytest tests/test_tokenizer.py  # Run tokenizer tests
+uv run <file.py>                       # Run any Python file
+uv run ruff check .                    # Run linter
+uv run ruff format .                   # Format code
 ```
 
 ## Architecture
@@ -38,8 +41,18 @@ Implementations go in `cs336_basics/`. Tests use adapter functions in `tests/ada
 Download training data to `data/`:
 ```bash
 mkdir -p data && cd data
+
+# TinyStories dataset
 wget https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinyStoriesV2-GPT4-train.txt
 wget https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinyStoriesV2-GPT4-valid.txt
+
+# OpenWebText sample (optional)
+wget https://huggingface.co/datasets/stanford-cs336/owt-sample/resolve/main/owt_train.txt.gz
+gunzip owt_train.txt.gz
+wget https://huggingface.co/datasets/stanford-cs336/owt-sample/resolve/main/owt_valid.txt.gz
+gunzip owt_valid.txt.gz
+
+cd ..
 ```
 
 ## Testing
