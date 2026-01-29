@@ -77,11 +77,11 @@ class RotaryPositionalEmbedding(nn.Module):
         angle = torch.outer(position, freq)
 
         # Register sin/cos as buffers for proper device management
-        self.register_buffer("s", torch.sin(angle).repeat_interleave(2, dim=-1))
-        self.register_buffer("c", torch.cos(angle).repeat_interleave(2, dim=-1))
+        self.register_buffer("s", torch.sin(angle).repeat_interleave(2, dim=-1), persistent=False)
+        self.register_buffer("c", torch.cos(angle).repeat_interleave(2, dim=-1), persistent=False)
 
         # Register sign pattern as buffer
-        self.register_buffer("sign", torch.tensor([-1, 1], dtype=torch.float32))
+        self.register_buffer("sign", torch.tensor([-1, 1], dtype=torch.float32), persistent=False)
 
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
         '''
