@@ -3,6 +3,8 @@ from torch import nn
 from math import sqrt
 from einops import einsum, rearrange
 
+from cs336_basics.utils import softmax
+
 class Linear(nn.Module):
     def __init__(self, in_features, out_features, device=None, dtype=None):
         super().__init__()
@@ -96,11 +98,6 @@ class RotaryPositionalEmbedding(nn.Module):
         x2 = x2.reshape(x.shape[:-1] + (self.d_k,))
 
         return x * self.c[token_positions] + x2 * self.s[token_positions]
-
-def softmax(x: torch.Tensor, i: int) -> torch.Tensor:
-    max_element = x.amax(dim=i,keepdim=True) # avoid overflow
-    exp_y = torch.exp(x-max_element)
-    return exp_y / exp_y.sum(dim=i,keepdim=True)
 
 def scaled_dot_product_attention(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor=None):
     '''
