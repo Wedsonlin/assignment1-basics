@@ -2,13 +2,18 @@ import torch
 from jaxtyping import Float, Int
 from math import cos, pi
 from collections.abc import Iterable
+import numpy.typing as npt
+import random
+import os
+import typing
 
 def softmax(x: torch.Tensor, i: int) -> torch.Tensor:
     max_element = x.amax(dim=i,keepdim=True) # avoid overflow
     exp_y = torch.exp(x-max_element)
     return exp_y / exp_y.sum(dim=i,keepdim=True)
 
-def cross_entropy(logits: Float[torch.Tensor, " batch_size vocab_size"], targets: Int[torch.Tensor, " batch_size"]) -> Float[torch.Tensor, ""]:
+def cross_entropy(logits: Float[torch.Tensor, " batch_size vocab_size"], targets: Int[torch.Tensor, " batch_size"]
+) -> Float[torch.Tensor, ""]:
     logits = logits - logits.amax(dim=-1, keepdim=True) # prevent overflow
     target_logits = logits.gather(dim=1, index=targets.unsqueeze(1)).squeeze(1) # target_logits:(batch,)
     output = torch.log(logits.exp().sum(dim=-1)) - target_logits
@@ -43,3 +48,35 @@ def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: flo
         grad *= clip_coef_clamped
 
     return 
+
+def get_batch(dataset: npt.NDArray, batch_size: int, context_length: int, device: str
+)-> tuple[torch.Tensor, torch.Tensor]:
+    sequence_list = [None] * batch_size
+    pair_list = [None] * batch_size
+    upper = dataset.shape[0] - context_length -1
+    for i in range(batch_size):
+        index = random.randint(0,upper)
+        sequence_list[i] = torch.from_numpy(dataset[index:index+context_length]).to(device)
+        pair_list[i] = torch.from_numpy(dataset[index+1:index+context_length+1]).to(device)
+    
+    t1 = torch.stack(sequence_list)
+    t2 = torch.stack(pair_list)
+
+    return (t1,t2)
+
+def save_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer, iteration: int, 
+                    out: str | os.PathLike | typing.BinaryIO | typing.IO[bytes]):
+    obj = dict()
+    obj['model_state'] = model.state_dict()
+    obj['optimizer_state'] = optimizer.state_dict()
+    obj['iteration'] = iteration
+
+    torch.save(obj, out)
+
+def load_checkpoint(src: str | os.PathLike | typing.BinaryIO | typing.IO[bytes], 
+                    model: torch.nn.Module, optimizer: torch.optim.Optimizer) -> int:
+    obj = torch.load(src)
+    model.load_state_dict(obj['model_state'])
+    optimizer.load_state_dict(obj['optimizer_state'])
+
+    return obj['iteration']

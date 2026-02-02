@@ -31,10 +31,10 @@ class SGD(torch.optim.Optimizer):
 class AdamW(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, weight_decay=0.01, betas=(0.9, 0.95), eps=1e-8):
         defaults = {
-            "alpha": lr,
+            "lr": lr,
             "betas": betas,
             "eps": eps,
-            "lambda": weight_decay
+            "weight_decay": weight_decay
         }
         super().__init__(params, defaults)
 
@@ -42,10 +42,10 @@ class AdamW(torch.optim.Optimizer):
         loss = None if closure is None else closure()
 
         for group in self.param_groups:
-            alpha = group['alpha']
+            alpha = group['lr']
             betas = group['betas']
             eps = group['eps']
-            Lamda = group['lambda']
+            Lamda = group['weight_decay']
 
             for p in group['params']:
                 if p.grad is None:
