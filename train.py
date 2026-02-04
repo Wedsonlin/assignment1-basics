@@ -5,6 +5,12 @@ from cs336_basics.utils import cross_entropy, learning_rate_schedule, gradient_c
 import torch
 import argparse
 import numpy as np
+import time
+
+from torch.utils.tensorboard import SummaryWriter
+
+def parse_tuple(s):
+    return tuple(float(x) for x in s.split(','))
 
 parser = argparse.ArgumentParser()
 
@@ -20,7 +26,7 @@ parser.add_argument('--rope_theta', default=100000, type=int)
 # optimizer hyperparameters
 parser.add_argument('--lr', default=1e-3, type=float)
 parser.add_argument('--weight_decay', default=0.01, type=float)
-parser.add_argument('--betas', default=(0.9, 0.95), type=tuple)
+parser.add_argument('--betas', default="0.9,0.95", type=parse_tuple)
 parser.add_argument('--eps', default=1e-8, type=float)
 
 
@@ -53,6 +59,7 @@ print("weight_decay:", weight_decay)
 print("betas:", betas)
 print("eps:", eps)
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 model = TransformerLM(
     vocab_size=vocab_size,
@@ -63,6 +70,7 @@ model = TransformerLM(
     d_ff=d_ff,
     rope_theta=rope_theta
 )
+model = model.to(device)
 
 optimizer = AdamW(
     model.parameters(),
@@ -72,16 +80,16 @@ optimizer = AdamW(
     eps=eps
 )
 
-checkpoint_path = ""
+checkpoint_load_path = ""
 iteration = None
 try:
-    iteration = load_checkpoint(checkpoint_path, model, optimizer)
+    iteration = load_checkpoint(checkpoint_load_path, model, optimizer)
 except FileNotFoundError:
     pass
 
+checkpoint_save_dir = "G:\\cs336\\checkpoints\\"
 
-
-dataset_path = "G:\\cs336\\parameters\\tokenID_tinystories_train.npy"
+dataset_path = "G:\\cs336\\parameters\\tokenID_tinystories_valid.npy"
 dataset = np.load(dataset_path)
 # dataset = np.memmap(dataset_path)
 
@@ -91,17 +99,24 @@ dataset = np.load(dataset_path)
 '''
 batch_size = 32
 num_step = 40000
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 if iteration is not None:
     num_step -= iteration
 
+log_dir = "G:\\cs336\\log"
+writer = SummaryWriter(log_dir=log_dir)
+
 for step in range(num_step):
+    optimizer.zero_grad()
+
     x, gt = get_batch(dataset, batch_size, context_length, device)
+    x = x.to(torch.long)
     y = model(x)
+
     loss = cross_entropy(y, gt)
     loss.backward()
-    gradient_clipping(model.parameters, max_l2_norm=10)
+    gradient_clipping(model.parameters(), max_l2_norm=10)
+
 
     lr = learning_rate_schedule(step, lr_max=10, lr_min=1, T_w=100, T_c=1000)
     for group in optimizer.param_groups:
@@ -109,5 +124,11 @@ for step in range(num_step):
     
     optimizer.step()
 
+    if step % 10000 == 0:
+        checkpoint_time = time.strftime("%Y-%m-%d-%H-%M", time.localtime())
+        save_checkpoint(model,optimizer,step,out=checkpoint_save_dir+f"checkpoint_{step}_{checkpoint_time}")
+    
+    if step % 10 == 0:
+        writer.add_scalar("Loss/train", loss, step)
 
-
+writer.close()

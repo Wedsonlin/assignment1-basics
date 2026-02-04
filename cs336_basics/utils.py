@@ -80,3 +80,9 @@ def load_checkpoint(src: str | os.PathLike | typing.BinaryIO | typing.IO[bytes],
     optimizer.load_state_dict(obj['optimizer_state'])
 
     return obj['iteration']
+
+def decoding(model: torch.nn.Module, prompt: torch.Tensor, max_generate_tokens: int, 
+             temperature: float=1.0, sampling_threshold: float=0.0) -> torch.Tensor:
+    
+
+    return

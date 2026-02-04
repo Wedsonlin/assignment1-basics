@@ -176,7 +176,7 @@ class MultiheadSelfAttention(nn.Module):
 
         seq_len = x.shape[-2]
         if self.causal_mask is None or self.causal_mask.shape[-1] < seq_len :
-            self.causal_mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool))
+            self.causal_mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device))
         mask = self.causal_mask[:seq_len, :seq_len]
 
         heads = scaled_dot_product_attention(Q, K, V, mask)

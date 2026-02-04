@@ -20,7 +20,20 @@ uv run ruff format .                   # Format code
 ## Architecture
 
 ### Implementation Pattern
-Implementations go in `cs336_basics/`. Tests use adapter functions in `tests/adapters.py` that call your implementations. To connect your code to tests, fill in the stub functions in `tests/adapters.py`.
+Implementations go in `cs336_basics/`. Tests use adapter functions in `tests/adapters.py` that call your implementations. To connect your code to tests:
+
+1. Implement your class/function in `cs336_basics/`
+2. Fill in the corresponding stub function in `tests/adapters.py`
+3. Ensure your state dict keys match what adapters expect (e.g., Linear uses "W", Embedding uses "embedding_matrix", RMSNorm uses "g")
+
+Adapter functions instantiate your classes and use `load_state_dict()` to load test weights, then verify outputs match reference implementations.
+
+### Development Workflow
+1. Read assignment handout for specifications
+2. Implement components in `cs336_basics/`
+3. Connect to tests via `tests/adapters.py`
+4. Run tests: `uv run pytest tests/test_<component>.py`
+5. Once tests pass, train models with `train.py`
 
 ### Components to Implement
 - **Tokenization**: BPE training (`train_bpe`), tokenizer class with encode/decode
@@ -32,9 +45,13 @@ Implementations go in `cs336_basics/`. Tests use adapter functions in `tests/ada
 
 ### Key Files
 - `cs336_basics/bpe.py` - BPE tokenizer implementation
-- `cs336_basics/pretokenization_example.py` - File chunking utilities for parallel processing
+- `cs336_basics/model.py` - Neural network layers (Linear, Embedding, RMSNorm, SwiGLU, attention, transformer blocks)
+- `cs336_basics/optimizer.py` - AdamW optimizer
+- `cs336_basics/utils.py` - Training utilities (loss functions, gradient clipping, batching, checkpointing)
+- `cs336_basics/pretokenization.py` - File chunking for parallel BPE training
 - `tests/adapters.py` - Adapter functions connecting implementations to tests
 - `tests/fixtures/` - Test data and reference outputs
+- `train.py` - Complete training script with checkpointing and logging
 
 ## Data Setup
 
@@ -58,3 +75,16 @@ cd ..
 ## Testing
 
 Tests use snapshot-based assertions. Reference implementations provide expected outputs in `tests/fixtures/`. Tests initially fail with `NotImplementedError` until adapters are connected.
+
+## Training
+
+Train a Transformer language model:
+```bash
+uv run train.py --vocab_size 50257 --context_length 1024 --d_model 768 --num_layers 12 --num_heads 12 --d_ff 3072
+```
+
+Key arguments:
+- Model hyperparameters: `--vocab_size`, `--context_length`, `--d_model`, `--num_layers`, `--num_heads`, `--d_ff`, `--rope_theta`
+- Optimizer settings: `--lr`, `--weight_decay`, `--betas`, `--eps`
+
+The script uses TensorBoard for logging and automatically saves checkpoints.
