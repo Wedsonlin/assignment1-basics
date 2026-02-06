@@ -6,6 +6,7 @@ import torch
 import argparse
 import numpy as np
 import time
+import os
 
 from torch.utils.tensorboard import SummaryWriter
 
@@ -15,7 +16,7 @@ def parse_tuple(s):
 parser = argparse.ArgumentParser()
 
 # model hyperparameters
-parser.add_argument('--vocab_size', default=50257, type=int)
+parser.add_argument('--vocab_size', default=10000, type=int)
 parser.add_argument('--context_length', default=1024, type=int)
 parser.add_argument('--d_model', default=768, type=int)
 parser.add_argument('--num_layers', default=12, type=int)
@@ -80,20 +81,25 @@ optimizer = AdamW(
     eps=eps
 )
 
-checkpoint_load_path = ""
+ckpt_load_path = ""
 start_iter = 0
-try:
-    start_iter = load_checkpoint(checkpoint_load_path, model, optimizer)
-except FileNotFoundError:
-    pass
+if os.path.exists(ckpt_load_path):
+    start_iter = load_checkpoint(ckpt_load_path, model, optimizer)
+    print(f"Resume from iter {start_iter}")
 
-checkpoint_save_dir = "G:\\cs336\\checkpoints\\"
+ckpt_save_dir = "G:\\cs336\\checkpoints\\"
+ckpt_save_dir = "/home/lin/ckpts/"
 
 train_dataset_path = "G:\\cs336\\parameters\\tokenID_tinystories_valid.npy"
 valid_dataset_path = "G:\\cs336\\parameters\\tokenID_tinystories_valid.npy"
-train_dataset = np.load(train_dataset_path)
-valid_dataset = np.load(valid_dataset_path)
-# dataset = np.memmap(dataset_path)
+
+train_dataset_path = "/mnt/hgfs/parameters/tokenID_tinystories_valid.npy"
+valid_dataset_path = "/mnt/hgfs/parameters/tokenID_tinystories_valid.npy"
+
+# train_dataset = np.load(train_dataset_path)
+# valid_dataset = np.load(valid_dataset_path)
+train_dataset = np.memmap(train_dataset_path, dtype=np.uint16, mode='r')
+valid_dataset = np.memmap(valid_dataset_path, dtype=np.uint16, mode='r')
 
 '''
     total tokens processed: 327,680,000
@@ -104,31 +110,30 @@ num_step = 40000
 
 
 log_dir = "G:\\cs336\\log"
+log_dir = "/home/lin/cs336/log"
 writer = SummaryWriter(log_dir=log_dir)
 
 for step in range(start_iter,num_step):
-    lr = learning_rate_schedule(step, lr_max=10, lr_min=1, T_w=100, T_c=1000)
+    lr = learning_rate_schedule(step, lr_max=10, lr_min=6e-5,T_w=1000, T_c=10000)
     for group in optimizer.param_groups:
         group['lr'] = lr
 
     model.train()
     x, gt = get_batch(train_dataset, batch_size, context_length, device)
-    x = x.to(torch.long)
     logits = model(x)
-
     train_loss = cross_entropy(logits, gt)
 
     optimizer.zero_grad()
     train_loss.backward()
-    gradient_clipping(model.parameters(), max_l2_norm=10)
+    gradient_clipping(model.parameters(), max_l2_norm=1.0)
     
     optimizer.step()
 
-    if step % 1000 == 0:
+    if step % 1 == 0:
         checkpoint_time = time.strftime("%Y-%m-%d-%H-%M", time.localtime())
-        save_checkpoint(model,optimizer,step,out=checkpoint_save_dir+f"checkpoint_{step}_{checkpoint_time}")
-    
-    if step % 100 == 0 or step == num_step - 1:
+        save_checkpoint(model,optimizer,step,out=ckpt_save_dir+f"ckpt_{step}_{checkpoint_time}")
+        
+    if step % 1 == 0 or step == num_step - 1:
         with torch.no_grad():
             model.eval()
             valid_x, valid_y = get_batch(valid_dataset, batch_size, context_length, device)
@@ -140,4 +145,5 @@ for step in range(start_iter,num_step):
             writer.add_scalar("valid_loss", valid_loss, step)
             writer.add_scalar("lr", lr, step)
 
+save_checkpoint(model,optimizer,step,out=ckpt_save_dir+f"ckpt_final_{checkpoint_time}")
 writer.close()

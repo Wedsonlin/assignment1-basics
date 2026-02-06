@@ -3,6 +3,7 @@ from jaxtyping import Float, Int
 from math import cos, pi
 from collections.abc import Iterable
 import numpy.typing as npt
+import numpy as np
 import random
 import os
 import typing
@@ -51,18 +52,19 @@ def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: flo
 
 def get_batch(dataset: npt.NDArray, batch_size: int, context_length: int, device: str
 )-> tuple[torch.Tensor, torch.Tensor]:
-    sequence_list = [None] * batch_size
-    pair_list = [None] * batch_size
     upper = dataset.shape[0] - context_length -1
-    for i in range(batch_size):
-        index = random.randint(0,upper)
-        sequence_list[i] = torch.from_numpy(dataset[index:index+context_length]).to(device)
-        pair_list[i] = torch.from_numpy(dataset[index+1:index+context_length+1]).to(device)
-    
-    t1 = torch.stack(sequence_list)
-    t2 = torch.stack(pair_list)
 
-    return (t1,t2)
+    starts = np.random.randint(0, upper+1, size=batch_size) # (B,)
+    offsets = np.arange(context_length) # (T,)
+    idx = starts[:,None] + offsets[None,:] # (B,1) + (1,T) = (B,T)
+    
+    x_np = dataset[idx]
+    y_np = dataset[idx+1]
+
+    x = torch.from_numpy(x_np).to(device=device, dtype=torch.long)
+    y = torch.from_numpy(y_np).to(device=device, dtype=torch.long)
+
+    return x,y
 
 def save_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer, iteration: int, 
                     out: str | os.PathLike | typing.BinaryIO | typing.IO[bytes]):
@@ -72,6 +74,8 @@ def save_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer, it
     obj['iteration'] = iteration
 
     torch.save(obj, out)
+
+    return
 
 def load_checkpoint(src: str | os.PathLike | typing.BinaryIO | typing.IO[bytes], 
                     model: torch.nn.Module, optimizer: torch.optim.Optimizer) -> int:
