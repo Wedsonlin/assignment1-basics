@@ -81,16 +81,18 @@ optimizer = AdamW(
 )
 
 checkpoint_load_path = ""
-iteration = None
+start_iter = 0
 try:
-    iteration = load_checkpoint(checkpoint_load_path, model, optimizer)
+    start_iter = load_checkpoint(checkpoint_load_path, model, optimizer)
 except FileNotFoundError:
     pass
 
 checkpoint_save_dir = "G:\\cs336\\checkpoints\\"
 
-dataset_path = "G:\\cs336\\parameters\\tokenID_tinystories_valid.npy"
-dataset = np.load(dataset_path)
+train_dataset_path = "G:\\cs336\\parameters\\tokenID_tinystories_valid.npy"
+valid_dataset_path = "G:\\cs336\\parameters\\tokenID_tinystories_valid.npy"
+train_dataset = np.load(train_dataset_path)
+valid_dataset = np.load(valid_dataset_path)
 # dataset = np.memmap(dataset_path)
 
 '''
@@ -100,35 +102,42 @@ dataset = np.load(dataset_path)
 batch_size = 32
 num_step = 40000
 
-if iteration is not None:
-    num_step -= iteration
 
 log_dir = "G:\\cs336\\log"
 writer = SummaryWriter(log_dir=log_dir)
 
-for step in range(num_step):
-    optimizer.zero_grad()
-
-    x, gt = get_batch(dataset, batch_size, context_length, device)
-    x = x.to(torch.long)
-    y = model(x)
-
-    loss = cross_entropy(y, gt)
-    loss.backward()
-    gradient_clipping(model.parameters(), max_l2_norm=10)
-
-
+for step in range(start_iter,num_step):
     lr = learning_rate_schedule(step, lr_max=10, lr_min=1, T_w=100, T_c=1000)
     for group in optimizer.param_groups:
         group['lr'] = lr
+
+    model.train()
+    x, gt = get_batch(train_dataset, batch_size, context_length, device)
+    x = x.to(torch.long)
+    logits = model(x)
+
+    train_loss = cross_entropy(logits, gt)
+
+    optimizer.zero_grad()
+    train_loss.backward()
+    gradient_clipping(model.parameters(), max_l2_norm=10)
     
     optimizer.step()
 
-    if step % 10000 == 0:
+    if step % 1000 == 0:
         checkpoint_time = time.strftime("%Y-%m-%d-%H-%M", time.localtime())
         save_checkpoint(model,optimizer,step,out=checkpoint_save_dir+f"checkpoint_{step}_{checkpoint_time}")
     
-    if step % 10 == 0:
-        writer.add_scalar("Loss/train", loss, step)
+    if step % 100 == 0 or step == num_step - 1:
+        with torch.no_grad():
+            model.eval()
+            valid_x, valid_y = get_batch(valid_dataset, batch_size, context_length, device)
+            valid_logits = model(valid_x)
+            valid_loss = cross_entropy(valid_logits, valid_y)
+            print(f"it:{step}, train_loss:{train_loss.item():.4f}, valid_loss:{valid_loss.item():.4f},lr:{lr}")
+
+            writer.add_scalar("train_loss", train_loss, step)
+            writer.add_scalar("valid_loss", valid_loss, step)
+            writer.add_scalar("lr", lr, step)
 
 writer.close()
