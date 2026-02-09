@@ -17,11 +17,11 @@ parser = argparse.ArgumentParser()
 
 # model hyperparameters
 parser.add_argument('--vocab_size', default=10000, type=int)
-parser.add_argument('--context_length', default=1024, type=int)
-parser.add_argument('--d_model', default=768, type=int)
-parser.add_argument('--num_layers', default=12, type=int)
-parser.add_argument('--num_heads', default=12, type=int)
-parser.add_argument('--d_ff', default=3072, type=int)
+parser.add_argument('--context_length', default=256, type=int)
+parser.add_argument('--d_model', default=512, type=int)
+parser.add_argument('--num_layers', default=4, type=int)
+parser.add_argument('--num_heads', default=16, type=int)
+parser.add_argument('--d_ff', default=1344, type=int)
 parser.add_argument('--rope_theta', default=100000, type=int)
 
 # optimizer hyperparameters
@@ -88,29 +88,29 @@ if os.path.exists(ckpt_load_path):
     print(f"Resume from iter {start_iter}")
 
 ckpt_save_dir = "G:\\cs336\\checkpoints\\"
-ckpt_save_dir = "/home/lin/ckpts/"
 
 train_dataset_path = "G:\\cs336\\parameters\\tokenID_tinystories_valid.npy"
 valid_dataset_path = "G:\\cs336\\parameters\\tokenID_tinystories_valid.npy"
 
-train_dataset_path = "/mnt/hgfs/parameters/tokenID_tinystories_valid.npy"
-valid_dataset_path = "/mnt/hgfs/parameters/tokenID_tinystories_valid.npy"
+# ckpt_save_dir = "/home/lin/ckpts/"
+# train_dataset_path = "/mnt/hgfs/parameters/tokenID_tinystories_valid.npy"
+# valid_dataset_path = "/mnt/hgfs/parameters/tokenID_tinystories_valid.npy"
 
-# train_dataset = np.load(train_dataset_path)
-# valid_dataset = np.load(valid_dataset_path)
-train_dataset = np.memmap(train_dataset_path, dtype=np.uint16, mode='r')
-valid_dataset = np.memmap(valid_dataset_path, dtype=np.uint16, mode='r')
+train_dataset = np.load(train_dataset_path)
+valid_dataset = np.load(valid_dataset_path)
+# train_dataset = np.memmap(train_dataset_path, dtype=np.uint16, mode='r')
+# valid_dataset = np.memmap(valid_dataset_path, dtype=np.uint16, mode='r')
 
 '''
     total tokens processed: 327,680,000
     total_tokens_processed = batch_size * num_step * context_length
 '''
 batch_size = 32
-num_step = 40000
+num_step = 1024
 
 
 log_dir = "G:\\cs336\\log"
-log_dir = "/home/lin/cs336/log"
+# log_dir = "/home/lin/cs336/log"
 writer = SummaryWriter(log_dir=log_dir)
 
 for step in range(start_iter,num_step):
@@ -129,11 +129,11 @@ for step in range(start_iter,num_step):
     
     optimizer.step()
 
-    if step % 1 == 0:
+    if step % 1000 == 0:
         checkpoint_time = time.strftime("%Y-%m-%d-%H-%M", time.localtime())
         save_checkpoint(model,optimizer,step,out=ckpt_save_dir+f"ckpt_{step}_{checkpoint_time}")
         
-    if step % 1 == 0 or step == num_step - 1:
+    if step % 100 == 0 or step == num_step - 1:
         with torch.no_grad():
             model.eval()
             valid_x, valid_y = get_batch(valid_dataset, batch_size, context_length, device)
