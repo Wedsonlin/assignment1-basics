@@ -18,7 +18,7 @@ dependencies = [
     "torchvision==0.21.0",
     "torchaudio==2.6.0",
     "tqdm>=4.67.1",
-    "wandb>=0.19.7",
+    "wandb==0.25.0",
     "ty>=0.0.1a16",
     "scalene>=1.5.55",
     "resource>=0.2.1",

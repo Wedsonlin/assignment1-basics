@@ -13,12 +13,20 @@ def softmax(x: torch.Tensor, i: int) -> torch.Tensor:
     exp_y = torch.exp(x-max_element)
     return exp_y / exp_y.sum(dim=i,keepdim=True)
 
-def cross_entropy(logits: Float[torch.Tensor, " batch_size vocab_size"], targets: Int[torch.Tensor, " batch_size"]
-) -> Float[torch.Tensor, ""]:
-    logits = logits - logits.amax(dim=-1, keepdim=True) # prevent overflow
-    target_logits = logits.gather(dim=1, index=targets.unsqueeze(1)).squeeze(1) # target_logits:(batch,)
-    output = torch.log(logits.exp().sum(dim=-1)) - target_logits
-    return output.mean()
+# def cross_entropy(logits: Float[torch.Tensor, " batch_size vocab_size"], targets: Int[torch.Tensor, " batch_size"]
+# ) -> Float[torch.Tensor, ""]:
+#     print(logits.shape,targets.shape)
+#     logits = logits - logits.amax(dim=-1, keepdim=True) # prevent overflow
+#     target_logits = logits.gather(dim=-1, index=targets.unsqueeze(1)).squeeze(1) # target_logits:(batch,)
+#     # output = torch.log(logits.exp().sum(dim=-1)) - target_logits
+#     output = torch.logsumexp(logits, dim=-1, keepdim=True) - target_logits
+#     return output.mean()
+
+def cross_entropy(inputs:torch.Tensor, targets:torch.Tensor) -> torch.Tensor:
+    # (batch_size, num_classes), (batch_size,) -> scalar
+    inputs = inputs - inputs.max(dim=-1, keepdim=True).values  # for numerical stability
+    log_probs = inputs - torch.logsumexp(inputs, dim=-1, keepdim=True)
+    return -log_probs.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1).mean()
 
 def learning_rate_schedule(t: int, lr_max: float, lr_min: float, T_w: int, T_c: int) -> float:
     if t < T_w:
@@ -78,10 +86,11 @@ def save_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer, it
     return
 
 def load_checkpoint(src: str | os.PathLike | typing.BinaryIO | typing.IO[bytes], 
-                    model: torch.nn.Module, optimizer: torch.optim.Optimizer) -> int:
+                    model: torch.nn.Module, optimizer: torch.optim.Optimizer | None) -> int:
     obj = torch.load(src)
     model.load_state_dict(obj['model_state'])
-    optimizer.load_state_dict(obj['optimizer_state'])
+    if optimizer is not None:
+        optimizer.load_state_dict(obj['optimizer_state'])
 
     return obj['iteration']
 
@@ -137,4 +146,4 @@ def decoding(model: torch.nn.Module, prompt: torch.Tensor, eos_token_id:int, max
         if next_id == eos_token_id:
             break
 
-    return input.unsqueeze(0)
+    return input.squeeze(0)

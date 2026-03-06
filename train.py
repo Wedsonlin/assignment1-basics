@@ -9,6 +9,7 @@ import time
 import os
 
 from torch.utils.tensorboard import SummaryWriter
+import wandb
 
 def parse_tuple(s):
     return tuple(float(x) for x in s.split(','))
@@ -62,30 +63,7 @@ print("eps:", eps)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-model = TransformerLM(
-    vocab_size=vocab_size,
-    context_length=context_length,
-    d_model=d_model,
-    num_layers=num_layers,
-    num_heads=num_heads,
-    d_ff=d_ff,
-    rope_theta=rope_theta
-)
-model = model.to(device)
-
-optimizer = AdamW(
-    model.parameters(),
-    lr=lr,
-    weight_decay=weight_decay,
-    betas=betas,
-    eps=eps
-)
-
-ckpt_load_path = ""
-start_iter = 0
-if os.path.exists(ckpt_load_path):
-    start_iter = load_checkpoint(ckpt_load_path, model, optimizer)
-    print(f"Resume from iter {start_iter}")
+ckpt_load_path = "G:\\cs336\\checkpoints\\ckpt_3000_2026-03-03-12-26"
 
 ckpt_save_dir = "G:\\cs336\\checkpoints\\"
 
@@ -105,45 +83,93 @@ valid_dataset = np.load(valid_dataset_path)
     total tokens processed: 327,680,000
     total_tokens_processed = batch_size * num_step * context_length
 '''
-batch_size = 32
-num_step = 1024
+context_length = 256
+batch_size = 128
+num_step = 10000
 
 
 log_dir = "G:\\cs336\\log"
 # log_dir = "/home/lin/cs336/log"
 writer = SummaryWriter(log_dir=log_dir)
 
-for step in range(start_iter,num_step):
-    lr = learning_rate_schedule(step, lr_max=10, lr_min=6e-5,T_w=1000, T_c=10000)
-    for group in optimizer.param_groups:
-        group['lr'] = lr
+# 1e-5, 3e-5, 1e-4, 3e-4, 1e-3, 3e-3, 6e-3, 1e-2,
+for lr in [3e-2]:
 
-    model.train()
-    x, gt = get_batch(train_dataset, batch_size, context_length, device)
-    logits = model(x)
-    train_loss = cross_entropy(logits, gt)
+    model = TransformerLM(
+        vocab_size=vocab_size,
+        context_length=context_length,
+        d_model=d_model,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        rope_theta=rope_theta
+    )
+    model = model.to(device)
 
-    optimizer.zero_grad()
-    train_loss.backward()
-    gradient_clipping(model.parameters(), max_l2_norm=1.0)
-    
-    optimizer.step()
+    optimizer = AdamW(
+        model.parameters(),
+        lr=lr,
+        weight_decay=weight_decay,
+        betas=betas,
+        eps=eps
+    )
 
-    if step % 1000 == 0:
-        checkpoint_time = time.strftime("%Y-%m-%d-%H-%M", time.localtime())
-        save_checkpoint(model,optimizer,step,out=ckpt_save_dir+f"ckpt_{step}_{checkpoint_time}")
+    start_iter = 0
+    # if lr == 3e-4 and os.path.exists(ckpt_load_path):
+    #     start_iter = load_checkpoint(ckpt_load_path, model, optimizer)
+    #     print(f"Resume from iter {start_iter}")
+
+    run = wandb.init(
+        # Set the wandb entity where your project will be logged (generally your team name).
+        entity="ltao02845-sun-yat-sen-university",
+        # Set the wandb project where this run will be logged.
+        project="tune-learning-rate",
+        # Track hyperparameters and run metadata.
+        config={
+            "learning_rate": lr
+        },
+        name=f"lr-{lr}",
+        resume="allow"
+    )
+
+    for step in range(start_iter,num_step):
+        step_lr = learning_rate_schedule(step, lr_max=lr, lr_min=lr*0.1,T_w=num_step//10, T_c=num_step)
+        for group in optimizer.param_groups:
+            group['lr'] = step_lr
+
+        model.train()
+        x, gt = get_batch(train_dataset, batch_size, context_length, device)
+        logits = model(x)
+        train_loss = cross_entropy(logits, gt)
+
+        optimizer.zero_grad()
+        train_loss.backward()
+        gradient_clipping(model.parameters(), max_l2_norm=1.0)
         
-    if step % 100 == 0 or step == num_step - 1:
-        with torch.no_grad():
-            model.eval()
-            valid_x, valid_y = get_batch(valid_dataset, batch_size, context_length, device)
-            valid_logits = model(valid_x)
-            valid_loss = cross_entropy(valid_logits, valid_y)
-            print(f"it:{step}, train_loss:{train_loss.item():.4f}, valid_loss:{valid_loss.item():.4f},lr:{lr}")
+        optimizer.step()
 
-            writer.add_scalar("train_loss", train_loss, step)
-            writer.add_scalar("valid_loss", valid_loss, step)
-            writer.add_scalar("lr", lr, step)
+        if step % 1000 == 0:
+            checkpoint_time = time.strftime("%Y-%m-%d-%H-%M", time.localtime())
+            save_checkpoint(model,optimizer,step,out=ckpt_save_dir+f"ckpt_{step}_{checkpoint_time}")
+            
+        if step % 100 == 0 or step == num_step - 1:
+            with torch.no_grad():
+                model.eval()
+                valid_x, valid_y = get_batch(valid_dataset, batch_size, context_length, device)
+                valid_logits = model(valid_x)
+                valid_loss = cross_entropy(valid_logits, valid_y)
+                print(f"it:{step}, train_loss:{train_loss.item():.4f}, valid_loss:{valid_loss.item():.4f},lr:{step_lr}")
 
-save_checkpoint(model,optimizer,step,out=ckpt_save_dir+f"ckpt_final_{checkpoint_time}")
+                run.log({
+                    "train_loss": train_loss,
+                    "valid_loss": valid_loss,
+                    "lr": step_lr
+                }, step=step)
+                writer.add_scalar("train_loss", train_loss, step)
+                writer.add_scalar("valid_loss", valid_loss, step)
+                writer.add_scalar("lr", step_lr, step)
+
+    save_checkpoint(model,optimizer,step,out=ckpt_save_dir+f"ckpt_final_{checkpoint_time}")
+    run.finish()
+
 writer.close()
