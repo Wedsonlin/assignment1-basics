@@ -106,8 +106,12 @@ def decoding(model: torch.nn.Module, prompt: torch.Tensor, eos_token_id:int, max
         device = next(model.parameters()).device()
     input = prompt.to(device)
 
-    for _ in range(max_generate_tokens):
-        logits = model(input)
+    context_length = model.context_length
+    if input.shape[1] > context_length:
+        raise Exception("exceed context length")
+
+    for i in range(max_generate_tokens):
+        logits = model(input[:,i:i+context_length])
 
         if logits.dim() == 3: # (1,T,V)
             next_logits = logits[0,-1,:]
