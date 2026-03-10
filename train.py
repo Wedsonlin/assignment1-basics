@@ -92,8 +92,7 @@ model = TransformerLM(
     num_heads=num_heads,
     d_ff=d_ff,
     rope_theta=rope_theta
-)
-model = model.to(device)
+).to(device)
 
 optimizer = AdamW(
     model.parameters(),
